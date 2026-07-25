@@ -14,6 +14,7 @@ defmodule RetWeb.HubChannel do
     Identity,
     Quiz,
     QuizAnswer,
+    UserProgress,
     Repo,
     RoomObject,
     OwnedFile,
@@ -658,6 +659,141 @@ defmodule RetWeb.HubChannel do
     else
       {:reply, {:error, %{message: "Unauthorized"}}, socket}
     end
+  end
+
+  def handle_in("track_progress", payload, socket) do
+    hub = socket |> hub_for_socket
+    account = Guardian.Phoenix.Socket.current_resource(socket)
+    session_id = socket.assigns.session_id
+
+    element_slug = payload["element_slug"]
+    element_type = payload["element_type"] || "element"
+    status = payload["status"] || "visited"
+
+    account_id = if account, do: account.account_id, else: nil
+
+    existing =
+      if account_id do
+        UserProgress.for_account_and_hub(account_id, hub.hub_id)
+        |> Enum.find(&(&1.element_slug == element_slug))
+      else
+        UserProgress.for_session_and_hub(session_id, hub.hub_id)
+        |> Enum.find(&(&1.element_slug == element_slug))
+      end
+
+    result =
+      if existing do
+        existing
+        |> UserProgress.changeset(%{
+          status: status,
+          score: payload["score"] || existing.score,
+          max_score: payload["max_score"] || existing.max_score,
+          time_spent_ms: (existing.time_spent_ms || 0) + (payload["time_spent_ms"] || 0),
+          visited_count: if(status == "visited", do: existing.visited_count + 1, else: existing.visited_count),
+          metadata: payload["metadata"] || existing.metadata
+        })
+        |> Repo.update()
+      else
+        %UserProgress{}
+        |> UserProgress.changeset(%{
+          account_id: account_id,
+          hub_id: hub.hub_id,
+          session_id: session_id,
+          element_slug: element_slug,
+          element_type: element_type,
+          status: status,
+          score: payload["score"],
+          max_score: payload["max_score"],
+          time_spent_ms: payload["time_spent_ms"] || 0,
+          visited_count: 1,
+          metadata: payload["metadata"] || %{}
+        })
+        |> Repo.insert()
+      end
+
+    case result do
+      {:ok, progress} ->
+        broadcast!(socket, "progress_updated", %{
+          account_id: account_id,
+          session_id: session_id,
+          element_slug: progress.element_slug,
+          element_type: progress.element_type,
+          status: progress.status,
+          score: progress.score,
+          max_score: progress.max_score,
+          time_spent_ms: progress.time_spent_ms,
+          visited_count: progress.visited_count
+        })
+        {:reply, {:ok, %{element_slug: progress.element_slug, status: progress.status}}, socket}
+
+      {:error, changeset} ->
+        {:reply, {:error, %{message: "Failed to track progress", errors: changeset.errors}}, socket}
+    end
+  end
+
+  def handle_in("get_my_progress", _payload, socket) do
+    hub = socket |> hub_for_socket
+    account = Guardian.Phoenix.Socket.current_resource(socket)
+    session_id = socket.assigns.session_id
+
+    entries =
+      if account do
+        UserProgress.for_account_and_hub(account.account_id, hub.hub_id)
+      else
+        UserProgress.for_session_and_hub(session_id, hub.hub_id)
+      end
+
+    {:reply, {:ok, %{entries: Enum.map(entries, &progress_to_map/1)}}, socket}
+  end
+
+  def handle_in("get_room_progress", _payload, socket) do
+    hub = socket |> hub_for_socket
+    account = Guardian.Phoenix.Socket.current_resource(socket)
+
+    if account && account |> can?(:update_hub, hub) do
+      entries = UserProgress.for_hub(hub.hub_id)
+
+      grouped =
+        entries
+        |> Enum.group_by(fn p ->
+          if p.account_id, do: {:account, p.account_id}, else: {:session, p.session_id}
+        end)
+        |> Enum.map(fn {key, group} ->
+          {identity_name, _account_id} =
+            case key do
+              {:account, id} ->
+                account = Repo.get(Ret.Account, id)
+                {if(account, do: account.name, else: "Anonymous"), id}
+              {:session, sid} ->
+                {sid, nil}
+            end
+
+          %{
+            account_id: (case key do {:account, id} -> id; _ -> nil end),
+            session_id: (case key do {:session, sid} -> sid; _ -> nil end),
+            identity_name: identity_name,
+            entries: Enum.map(group, &progress_to_map/1)
+          }
+        end)
+
+      {:reply, {:ok, %{students: grouped}}, socket}
+    else
+      {:reply, {:error, %{message: "Unauthorized"}}, socket}
+    end
+  end
+
+  defp progress_to_map(progress) do
+    %{
+      element_slug: progress.element_slug,
+      element_type: progress.element_type,
+      status: progress.status,
+      score: progress.score,
+      max_score: progress.max_score,
+      time_spent_ms: progress.time_spent_ms,
+      visited_count: progress.visited_count,
+      metadata: progress.metadata,
+      updated_at: progress.updated_at
+    }
   end
 
   def handle_in("update_hub", payload, socket) do
