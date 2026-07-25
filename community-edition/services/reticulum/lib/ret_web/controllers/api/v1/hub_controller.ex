@@ -1,7 +1,7 @@
 defmodule RetWeb.Api.V1.HubController do
   use RetWeb, :controller
 
-  alias Ret.{Hub, Scene, Repo}
+  alias Ret.{Hub, Scene, Repo, UserProgress, QuizAnswer}
 
   import Canada, only: [can?: 2]
 
@@ -80,6 +80,46 @@ defmodule RetWeb.Api.V1.HubController do
 
   defp maybe_add_new_scene(changeset, scene),
     do: changeset |> Hub.add_new_scene_to_changeset(scene)
+
+  def analytics(conn, %{"id" => hub_sid}) do
+    account = Guardian.Plug.current_resource(conn)
+
+    case Hub |> Repo.get_by(hub_sid: hub_sid) do
+      %Hub{} = hub ->
+        if account |> can?(:update_hub, hub) do
+          member_count = Hub.member_count_for(hub)
+          lobby_count = Hub.lobby_count_for(hub)
+
+          student_count =
+            Repo.one(
+              from p in UserProgress,
+                where: p.hub_id == ^hub.hub_id,
+                select: count(p.account_id, :distinct)
+            ) || 0
+
+          total_quiz_answers =
+            Repo.one(
+              from a in QuizAnswer,
+                join: q in assoc(a, :quiz),
+                where: q.hub_id == ^hub.hub_id,
+                select: count(a.quiz_answer_id)
+            ) || 0
+
+          conn |> render("analytics.json", %{
+            hub: hub,
+            member_count: member_count,
+            lobby_count: lobby_count,
+            student_count: student_count,
+            total_quiz_answers: total_quiz_answers
+          })
+        else
+          conn |> send_resp(401, "unauthorized")
+        end
+
+      _ ->
+        conn |> send_resp(404, "not found")
+    end
+  end
 
   def delete(conn, %{"id" => hub_sid}) do
     Hub

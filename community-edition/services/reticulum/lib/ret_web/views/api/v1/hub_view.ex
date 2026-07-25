@@ -60,6 +60,15 @@ defmodule RetWeb.Api.V1.HubView do
     }
   end
 
+  def render("analytics.json", %{hub: hub, member_count: member_count, lobby_count: lobby_count, student_count: student_count, total_quiz_answers: total_quiz_answers}) do
+    %{
+      member_count: member_count,
+      lobby_count: lobby_count,
+      student_count: student_count,
+      total_quiz_answers: total_quiz_answers
+    }
+  end
+
   defp render_with_scene_asset(hub, asset_type, asset_url) do
     %{
       hubs: [
