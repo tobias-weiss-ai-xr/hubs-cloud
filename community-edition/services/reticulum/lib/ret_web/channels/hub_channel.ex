@@ -12,6 +12,8 @@ defmodule RetWeb.HubChannel do
     Account,
     AccountFavorite,
     Identity,
+    Quiz,
+    QuizAnswer,
     Repo,
     RoomObject,
     OwnedFile,
@@ -521,6 +523,141 @@ defmodule RetWeb.HubChannel do
 
     {:reply, {:ok, %{host: hub.host, port: Hub.janus_port(), turn: Hub.generate_turn_info()}},
      socket}
+  end
+
+  def handle_in("start_quiz", payload, socket) do
+    hub = socket |> hub_for_socket
+    account = Guardian.Phoenix.Socket.current_resource(socket)
+
+    if account && account |> can?(:update_hub, hub) do
+      Quiz.active_for_hub(hub.hub_id)
+      |> Repo.update_all(set: [active: false])
+
+      result =
+        %Quiz{}
+        |> Quiz.changeset(%{
+          hub_id: hub.hub_id,
+          title: payload["title"] || "Quiz",
+          question: payload["question"],
+          options: payload["options"],
+          correct_index: payload["correct_index"],
+          active: true
+        })
+        |> Repo.insert()
+
+      case result do
+        {:ok, quiz} ->
+          broadcast!(socket, "quiz_started", %{
+            quiz_id: quiz.quiz_id,
+            title: quiz.title,
+            question: quiz.question,
+            options: quiz.options
+          })
+
+          {:reply, {:ok, %{quiz_id: quiz.quiz_id}}, socket}
+
+        {:error, changeset} ->
+          {:reply, {:error, %{message: "Failed to create quiz", errors: changeset.errors}}, socket}
+      end
+    else
+      {:reply, {:error, %{message: "Unauthorized"}}, socket}
+    end
+  end
+
+  def handle_in("submit_answer", payload, socket) do
+    hub = socket |> hub_for_socket
+    account = Guardian.Phoenix.Socket.current_resource(socket)
+    session_id = socket.assigns.session_id
+    quiz_id = payload["quiz_id"]
+    answer_index = payload["answer_index"]
+
+    quiz = Repo.get(Quiz, quiz_id)
+
+    cond do
+      is_nil(quiz) ->
+        {:reply, {:error, %{message: "Quiz not found"}}, socket}
+
+      !quiz.active ->
+        {:reply, {:error, %{message: "Quiz is not active"}}, socket}
+
+      is_nil(answer_index) or answer_index < 0 or answer_index >= length(quiz.options) ->
+        {:reply, {:error, %{message: "Invalid answer"}}, socket}
+
+      true ->
+        correct = answer_index == quiz.correct_index
+        account_id = if account, do: account.account_id, else: nil
+
+        QuizAnswer.for_quiz_and_session(quiz_id, session_id)
+        |> Repo.delete_all()
+
+        %QuizAnswer{}
+        |> QuizAnswer.changeset(%{
+          quiz_id: quiz_id,
+          account_id: account_id,
+          session_id: session_id,
+          answer_index: answer_index,
+          correct: correct
+        })
+        |> Repo.insert()
+
+        {:reply, {:ok, %{correct: correct, answer_index: answer_index}}, socket}
+    end
+  end
+
+  def handle_in("get_quiz_results", %{"quiz_id" => quiz_id}, socket) do
+    quiz = Repo.get(Quiz, quiz_id) |> Repo.preload([:quiz_answers])
+
+    if quiz do
+      total = length(quiz.quiz_answers)
+      correct = Enum.count(quiz.quiz_answers, & &1.correct)
+
+      {:reply,
+       {:ok,
+        %{
+          quiz_id: quiz.quiz_id,
+          title: quiz.title,
+          question: quiz.question,
+          options: quiz.options,
+          correct_index: quiz.correct_index,
+          total_answers: total,
+          correct_count: correct,
+          answers:
+            Enum.map(quiz.quiz_answers, fn a ->
+              %{
+                account_id: a.account_id,
+                session_id: a.session_id,
+                answer_index: a.answer_index,
+                correct: a.correct
+              }
+            end)
+        }}, socket}
+    else
+      {:reply, {:error, %{message: "Quiz not found"}}, socket}
+    end
+  end
+
+  def handle_in("end_quiz", %{"quiz_id" => quiz_id}, socket) do
+    hub = socket |> hub_for_socket
+    account = Guardian.Phoenix.Socket.current_resource(socket)
+
+    if account && account |> can?(:update_hub, hub) do
+      result =
+        quiz_id
+        |> Repo.get(Quiz)
+        |> Quiz.changeset(%{active: false})
+        |> Repo.update()
+
+      case result do
+        {:ok, quiz} ->
+          broadcast!(socket, "quiz_ended", %{quiz_id: quiz.quiz_id})
+          {:reply, :ok, socket}
+
+        {:error, _} ->
+          {:reply, {:error, %{message: "Failed to end quiz"}}, socket}
+      end
+    else
+      {:reply, {:error, %{message: "Unauthorized"}}, socket}
+    end
   end
 
   def handle_in("update_hub", payload, socket) do
