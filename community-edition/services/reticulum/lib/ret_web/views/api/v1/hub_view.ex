@@ -1,6 +1,6 @@
 defmodule RetWeb.Api.V1.HubView do
   use RetWeb, :view
-  alias Ret.{Hub, Scene, SceneListing}
+  alias Ret.{Hub, Scene, SceneListing, HubWorksheets}
 
   def render("create.json", %{hub: hub}) do
     %{
@@ -66,6 +66,24 @@ defmodule RetWeb.Api.V1.HubView do
       lobby_count: lobby_count,
       student_count: student_count,
       total_quiz_answers: total_quiz_answers
+    }
+  end
+
+  def render("worksheets.json", %{worksheets: worksheets}) do
+    %{worksheets: Enum.map(worksheets, &worksheet_json/1)}
+  end
+
+  def render("worksheet.json", %{worksheet: worksheet}) do
+    worksheet_json(worksheet)
+  end
+
+  defp worksheet_json(w) do
+    %{
+      worksheet_id: w.worksheet_id,
+      title: w.title,
+      steps: w.steps,
+      active: w.active,
+      inserted_at: w.inserted_at
     }
   end
 

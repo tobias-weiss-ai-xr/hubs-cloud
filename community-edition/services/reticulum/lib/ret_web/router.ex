@@ -165,6 +165,8 @@ defmodule RetWeb.Router do
       resources "/avatars", Api.V1.AvatarController, only: [:create, :update, :delete]
       resources "/hubs", Api.V1.HubController, only: [:update]
       get "/hubs/:id/analytics", Api.V1.HubController, :analytics
+      get "/hubs/:id/worksheets", Api.V1.HubController, :index_worksheets
+      post "/hubs/:id/worksheets", Api.V1.HubController, :create_worksheets
       resources "/assets", Api.V1.AssetsController, only: [:create, :delete]
 
       post "/twitter/tweets", Api.V1.TwitterController, :tweets

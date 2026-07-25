@@ -1,7 +1,7 @@
 defmodule RetWeb.Api.V1.HubController do
   use RetWeb, :controller
 
-  alias Ret.{Hub, Scene, Repo, UserProgress, QuizAnswer}
+  alias Ret.{Hub, Scene, Repo, UserProgress, QuizAnswer, HubWorksheets}
 
   import Canada, only: [can?: 2]
 
@@ -112,6 +112,47 @@ defmodule RetWeb.Api.V1.HubController do
             student_count: student_count,
             total_quiz_answers: total_quiz_answers
           })
+        else
+          conn |> send_resp(401, "unauthorized")
+        end
+
+      _ ->
+        conn |> send_resp(404, "not found")
+    end
+  end
+
+  def index_worksheets(conn, %{"id" => hub_sid}) do
+    account = Guardian.Plug.current_resource(conn)
+
+    case Hub |> Repo.get_by(hub_sid: hub_sid) do
+      %Hub{} = hub ->
+        if account |> can?(:update_hub, hub) do
+          worksheets = HubWorksheets.for_hub(hub.hub_id)
+          conn |> render("worksheets.json", %{worksheets: worksheets})
+        else
+          conn |> send_resp(401, "unauthorized")
+        end
+
+      _ ->
+        conn |> send_resp(404, "not found")
+    end
+  end
+
+  def create_worksheets(conn, %{"id" => hub_sid, "worksheet" => ws_params}) do
+    account = Guardian.Plug.current_resource(conn)
+
+    case Hub |> Repo.get_by(hub_sid: hub_sid) do
+      %Hub{} = hub ->
+        if account |> can?(:update_hub, hub) do
+          %HubWorksheets{}
+          |> HubWorksheets.changeset(Map.put(ws_params, "hub_id", hub.hub_id))
+          |> Repo.insert()
+          |> case do
+            {:ok, worksheet} ->
+              conn |> render("worksheet.json", %{worksheet: worksheet})
+            {:error, changeset} ->
+              conn |> send_resp(422, "invalid worksheet")
+          end
         else
           conn |> send_resp(401, "unauthorized")
         end
